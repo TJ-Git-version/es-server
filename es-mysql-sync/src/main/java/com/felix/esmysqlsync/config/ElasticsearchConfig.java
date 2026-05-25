@@ -1,7 +1,7 @@
 package com.felix.esmysqlsync.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.json.jsonb.JsonbJsonpMapper;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import org.apache.http.HttpHost;
 import org.elasticsearch.client.RestClient;
@@ -17,7 +17,7 @@ public class ElasticsearchConfig {
         return new ElasticsearchClient(
                 new RestClientTransport(
                         RestClient.builder(
-                                new HttpHost("localhost", 9200, "http")).build(), new JsonbJsonpMapper()
+                                new HttpHost("localhost", 9200, "http")).build(), new JacksonJsonpMapper()
                 )
         );
     }

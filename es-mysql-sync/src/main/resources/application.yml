@@ -30,9 +30,13 @@ spring:
   rabbitmq:
     host: localhost
     port: 5672
-    username: admin
-    password: admin
+    username: root
+    password: root
     virtual-host: /
+    publisher-confirm-type: correlated # 开启生产者确认
+    publisher-returns: true # 开启消息返回
+    template:
+      mandatory: true # 启用强制消息路由
     listener:
       simple:
         acknowledge-mode: manual # 开启手动确认
@@ -49,5 +53,27 @@ spring:
 
 mybatis-plus:
   configuration:
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+#    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
   mapper-locations: classpath*:/mapper/**/*.xml
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+  openapi:
+    info:
+      title: ES MySQL Sync API
+      description: MySQL to Elasticsearch 同步服务接口文档
+      version: 1.0.0
+      contact:
+        name: felix
+    terms-of-service-url: https://www.apache.org/licenses/LICENSE-2.0
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha

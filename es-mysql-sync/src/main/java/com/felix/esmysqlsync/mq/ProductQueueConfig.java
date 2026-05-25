@@ -9,9 +9,15 @@ import static com.felix.esmysqlsync.model.constant.RabbitMQConstants.Product.*;
 @Configuration
 public class ProductQueueConfig {
 
+    /**
+     * 业务队列 - 绑定死信队列
+     */
     @Bean
     public Queue productQueue() {
-        return new Queue(QUEUE, true);
+        return QueueBuilder.durable()
+                .deadLetterExchange(DEAD_EXCHANGE)
+                .deadLetterRoutingKey(DEAD_ROUTING_KEY)
+                .build();
     }
 
     @Bean
@@ -24,7 +30,9 @@ public class ProductQueueConfig {
         return BindingBuilder.bind(productQueue).to(productExchange).with(ROUTING_KEY);
     }
 
-    // 死信队列
+    /**
+     * 死信队列
+     */
     @Bean
     public Queue productDlqQueue() {
         return new Queue(DEAD_QUEUE, true);
@@ -38,15 +46,5 @@ public class ProductQueueConfig {
     @Bean
     public Binding productDlqBinding(Queue productDlqQueue, DirectExchange productDlqExchange) {
         return BindingBuilder.bind(productDlqQueue).to(productDlqExchange).with(DEAD_ROUTING_KEY);
-    }
-
-    // 队列绑定死信队列
-
-    @Bean
-    public Queue productBusinessQueue() {
-        return QueueBuilder.durable()
-                .deadLetterExchange(DEAD_EXCHANGE)
-                .deadLetterRoutingKey(DEAD_ROUTING_KEY)
-                .build();
     }
 }

@@ -41,6 +41,7 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
     @Override
     public void createIndex() {
         try {
+            elasticsearchClient.indices().delete(dr -> dr.index("product"));
             elasticsearchClient.indices().create(cir -> cir.index("product"));
         } catch (IOException e) {
             throw new RuntimeException(e);
