@@ -17,7 +17,7 @@ public class ElasticsearchConfig {
         return new ElasticsearchClient(
                 new RestClientTransport(
                         RestClient.builder(
-                                new HttpHost("localhost", 9200, "http")).build(), new JacksonJsonpMapper()
+                                new HttpHost("100.64.0.8", 9200, "http")).build(), new JacksonJsonpMapper()
                 )
         );
     }

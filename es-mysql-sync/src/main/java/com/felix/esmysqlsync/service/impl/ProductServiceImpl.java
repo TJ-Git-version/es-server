@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -37,6 +38,8 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
     private final ThreadPoolTaskExecutor esThreadPoolTaskExecutor;
 
     private final RabbitMQUtil rabbitMQUtil;
+
+    private final TransactionTemplate transactionTemplate;
 
     @Override
     public void createIndex() {
@@ -143,32 +146,32 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
     @Override
     public boolean updateProduct(Long id, ProductEntity product) {
         product.setId(id);
-        boolean updateFlag = updateById(product);
-        if (updateFlag) {
+        Boolean updateFlag = transactionTemplate.execute((status) -> updateById(product));
+        if (Boolean.TRUE.equals(updateFlag)) {
             ProductEsBO productEsBO = BeanUtil.copyProperties(product, ProductEsBO.class);
             productEsBO.setUpdate();
             rabbitMQUtil.sendMessage(RabbitMQConstants.Product.EXCHANGE, RabbitMQConstants.Product.ROUTING_KEY, productEsBO);
         }
-        return updateFlag;
+        return Boolean.TRUE.equals(updateFlag);
     }
 
     @Override
     public boolean deleteProduct(Long id) {
-        boolean removeFlag = removeById(id);
-        if (removeFlag) {
+        Boolean removeFlag = transactionTemplate.execute((status) -> removeById(id));
+        if (Boolean.TRUE.equals(removeFlag)) {
             rabbitMQUtil.sendMessage(RabbitMQConstants.Product.EXCHANGE, RabbitMQConstants.Product.ROUTING_KEY, ProductEsBO.builder().id(id).operationType(OperationType.DELETE).build());
         }
-        return removeFlag;
+        return Boolean.TRUE.equals(removeFlag);
     }
 
     @Override
     public boolean addProduct(ProductEntity product) {
-        boolean saveFlag = save(product);
-        if (saveFlag) {
+        Boolean saveFlag = transactionTemplate.execute((status) -> save(product));
+        if (Boolean.TRUE.equals(saveFlag)) {
             ProductEsBO productEsBO = BeanUtil.copyProperties(product, ProductEsBO.class);
             productEsBO.setInsert();
             rabbitMQUtil.sendMessage(RabbitMQConstants.Product.EXCHANGE, RabbitMQConstants.Product.ROUTING_KEY, productEsBO);
         }
-        return saveFlag;
+        return Boolean.TRUE.equals(saveFlag);
     }
 }
