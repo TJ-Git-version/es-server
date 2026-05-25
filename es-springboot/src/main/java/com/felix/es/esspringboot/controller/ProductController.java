@@ -2,6 +2,7 @@ package com.felix.es.esspringboot.controller;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import co.elastic.clients.json.JsonData;
 import com.felix.es.esspringboot.model.dto.ProductQueryDTO;
 import com.felix.es.esspringboot.model.dto.vo.ProductListVO;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @RestController
@@ -29,7 +31,6 @@ public class ProductController {
     @GetMapping("/query")
     public ProductListVO query(ProductQueryDTO productQueryDTO) throws IOException {
         ProductListVO productListVO = new ProductListVO();
-        String keyword = productQueryDTO.getKeyword();
         //Map<String, Aggregation> aggregations = new HashMap<>();
         //if (productQueryDTO.getMinPrice() != null) {
         //    aggregations.put("min_price", Aggregation
@@ -53,7 +54,7 @@ public class ProductController {
                                                 b.must(m -> m
                                                         .match(ma -> ma
                                                                 .field("title")
-                                                                .query(keyword)
+                                                                .query(productQueryDTO.getKeyword())
                                                         )
                                                 );
                                             if (productQueryDTO.getBrand() != null && !productQueryDTO.getBrand().isEmpty())
@@ -68,10 +69,10 @@ public class ProductController {
                                                         .range(r -> {
                                                                     r.field("price");
                                                                     if (productQueryDTO.getMinPrice() != null) {
-                                                                            r.gte(JsonData.of(productQueryDTO.getMinPrice()));
+                                                                        r.gte(JsonData.of(productQueryDTO.getMinPrice()));
                                                                     }
                                                                     if (productQueryDTO.getMaxPrice() != null) {
-                                                                            r.lte(JsonData.of(productQueryDTO.getMaxPrice()));
+                                                                        r.lte(JsonData.of(productQueryDTO.getMaxPrice()));
                                                                     }
                                                                     return r;
                                                                 }
@@ -96,7 +97,7 @@ public class ProductController {
                     ProductVO productVO = new ProductVO();
                     BeanUtils.copyProperties(m.source(), productVO);
                     List<String> title = m.highlight().getOrDefault("title", List.of());
-                    if (title.isEmpty()) {
+                    if (!title.isEmpty()) {
                         productVO.setHighLightTitle(String.join("", title));
                     } else {
                         productVO.setHighLightTitle(m.source().getTitle());
@@ -132,6 +133,34 @@ public class ProductController {
         //        .minPrice(minPriceValue)
         //        .build());
         return productListVO;
+    }
+
+    /**
+     * 批量添加商品
+     */
+    @GetMapping("/batch-add")
+    public void batchAdd() throws IOException {
+        // 创建100条商品数据
+        List<Product> products = new ArrayList<>();
+        for (int i = 1; i <= 100; i++) {
+            Product product = Product.builder()
+                    .id(i + 100L)
+                    .title("小米手机 Mita" + i)
+                    .price(i * 3000D)
+                    .brand("小米")
+                    .stock(100 + i)
+                    .build();
+            products.add(product);
+        }
+        List<BulkOperation> bulkOperations = products.stream()
+                .map(product ->
+                        BulkOperation.of(bo -> bo
+                                .create(co -> co.index("product").id(product.getId().toString()).document(product))
+                        )
+                )
+                .toList();
+        elasticsearchClient.bulk(bk -> bk.index("product").operations(bulkOperations));
+
     }
 
 }
