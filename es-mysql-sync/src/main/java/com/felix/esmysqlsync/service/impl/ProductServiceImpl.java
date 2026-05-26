@@ -1,16 +1,30 @@
 package com.felix.esmysqlsync.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.ReindexResponse;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
+import co.elastic.clients.elasticsearch.core.reindex.Destination;
+import co.elastic.clients.elasticsearch.core.reindex.Source;
+import co.elastic.clients.elasticsearch.indices.UpdateAliasesResponse;
+import co.elastic.clients.elasticsearch.indices.analyze.AnalyzeToken;
+import co.elastic.clients.json.JsonData;
+import co.elastic.clients.transport.endpoints.BooleanResponse;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.felix.esmysqlsync.mapper.ProductMapper;
 import com.felix.esmysqlsync.model.bo.ProductEsBO;
 import com.felix.esmysqlsync.model.constant.RabbitMQConstants;
+import com.felix.esmysqlsync.model.dto.ProductQueryDTO;
 import com.felix.esmysqlsync.model.entity.ProductEntity;
 import com.felix.esmysqlsync.model.enums.OperationType;
+import com.felix.esmysqlsync.model.vo.IndexMappingVO;
+import com.felix.esmysqlsync.model.vo.ProductEsVO;
+import com.felix.esmysqlsync.model.vo.ProductListVO;
 import com.felix.esmysqlsync.service.ProductService;
 import com.felix.esmysqlsync.utils.RabbitMQUtil;
 import lombok.RequiredArgsConstructor;
@@ -20,11 +34,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -41,12 +55,121 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
 
     private final TransactionTemplate transactionTemplate;
 
+    /**
+     * 全量同步数据从旧索引到新索引
+     */
+    public ReindexResponse reindexData(String sourceIndex, String destIndex) throws Exception {
+        ReindexResponse response = elasticsearchClient.reindex(r -> r
+                .source(Source.of(s -> s.index(sourceIndex)))
+                .dest(Destination.of(d -> d.index(destIndex)))
+                .waitForCompletion(true) // 等待同步完成
+                .refresh(true) // 同步完成后刷新索引
+        );
+
+        System.out.println("同步完成：成功 " + response.total() + " 条，失败 " + response.failures().size() + " 条");
+        return response;
+    }
+
+    /**
+     * 通用别名切换方法：自动获取别名当前指向的索引，切换到新索引
+     * @param newIndex 新索引名
+     * @param alias 公共别名
+     */
+    public boolean switchIndexAliasAuto(String oldIndex, String newIndex, String alias)  {
+        log.info("Switching index alias from {} to {} for alias {}", oldIndex, newIndex, alias);
+        try {
+            UpdateAliasesResponse updateAliasesResponse = elasticsearchClient.indices().updateAliases(uar -> uar
+                    .actions(a -> {
+                                if (oldIndex != null) {
+                                    log.info("Removing alias {} from index {}", alias, oldIndex);
+                                    a.remove(r -> r.index(oldIndex).alias(alias));
+                                }
+                                if (newIndex != null) {
+                                    log.info("Adding alias {} to index {}", alias, newIndex);
+                                    a.add(aa -> aa.index(newIndex).alias(alias).isWriteIndex(true));
+                                }
+                                return a;
+                            }
+                    )
+            );
+            return updateAliasesResponse.acknowledged();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     @Override
     public void createIndex() {
         try {
-            elasticsearchClient.indices().delete(dr -> dr.index("product"));
-            elasticsearchClient.indices().create(cir -> cir.index("product"));
-        } catch (IOException e) {
+            BooleanResponse exists = elasticsearchClient.indices().exists(er -> er.index("product_v1"));
+            if (exists.value()) {
+                log.info("Index product_v1 already exists");
+                return;
+            }
+            Map<String, Property> properties = new HashMap<>();
+            properties.put("productName", Property.of(p -> p
+                            .text(t -> t
+                                    .analyzer("ik_max_word")
+                                    .searchAnalyzer("ik_smart")
+                                    .fields("keyword", f -> f
+                                            .keyword(k -> k
+                                                    .ignoreAbove(256)
+                                            )
+                                    )
+                            )
+                    )
+            );
+            properties.put("productNo", Property.of(p -> p
+                    .text(t -> t
+                            .analyzer("ik_max_word")
+                            .searchAnalyzer("ik_smart")
+                            .fields("keyword", f -> f
+                                    .keyword(k -> k
+                                            .ignoreAbove(256)
+                                    )
+                            )
+                    )
+            ));
+            properties.put("categoryId", Property.of(p -> p
+                    .keyword(k -> k)
+            ));
+            properties.put("brandId", Property.of(p -> p
+                    .keyword(k -> k)
+            ));
+            properties.put("price", Property.of(p -> p
+                    .double_(d -> d)
+            ));
+            properties.put("marketPrice", Property.of(p -> p
+                    .double_(d -> d)
+            ));
+            properties.put("costPrice", Property.of(p -> p
+                    .double_(d -> d)
+            ));
+            properties.put("stock", Property.of(p -> p
+                    .integer(i -> i)
+            ));
+            properties.put("status", Property.of(p -> p
+                    .integer(i -> i)
+            ));
+            properties.put("sort", Property.of(p -> p
+                    .integer(i -> i)
+            ));
+            properties.put("createTime", Property.of(p -> p
+                    .date(d -> d
+                            .format("yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis||epoch_second")
+                    )
+            ));
+            properties.put("updateTime", Property.of(p -> p
+                    .date(d -> d
+                            .format("yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis||epoch_second")
+                    )
+            ));
+            elasticsearchClient.indices().create(cir -> cir
+                    .index("product_v1")
+                    .mappings(m -> m
+                            .properties(properties)
+                    ));
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
@@ -104,12 +227,12 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
                     try {
                         List<BulkOperation> bulkOperations = list.stream()
                                 .map(m -> BulkOperation.of(bo -> bo
-                                        .create(co -> co
+                                        .index(io -> io
                                                 .id(m.getId().toString())
                                                 .document(m))))
                                 .toList();
                         BulkResponse response = elasticsearchClient.bulk(BulkRequest.of(br -> br
-                                .index("product")
+                                .index("product_v1")
                                 .operations(bulkOperations)
                         ));
                         if (response.errors()) {
@@ -136,9 +259,12 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
                     log.error("Task execution failed", e);
                 }
             }
+            elasticsearchClient.indices().refresh(r -> r.index("product_v1"));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Data initialization interrupted", e);
+        } catch (IOException e) {
+            log.error("Data initialization failed", e);
         }
         log.info("Data initialization completed in {} ms", System.currentTimeMillis() - startTime);
     }
@@ -173,5 +299,155 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
             rabbitMQUtil.sendMessage(RabbitMQConstants.Product.EXCHANGE, RabbitMQConstants.Product.ROUTING_KEY, productEsBO);
         }
         return Boolean.TRUE.equals(saveFlag);
+    }
+
+    @Override
+    public ProductListVO listProductPage(ProductQueryDTO queryDTO) {
+        log.info("query product list: {}", queryDTO);
+        try {
+            long count = elasticsearchClient.count().count();
+            log.info("query product list count: {}", count);
+            if (count == 0) {
+                return ProductListVO.builder().total(0L).build();
+            }
+            SearchResponse<ProductEsVO> searchResponse = elasticsearchClient.search(sr -> sr
+                            .index("product")
+                            .query(qr -> qr
+                                    .bool(bq -> {
+                                                if (StrUtil.isNotBlank(queryDTO.getProductName())) {
+                                                    bq.must(m -> m.match(mc -> mc
+                                                            .field("productName").query(queryDTO.getProductName())
+                                                    ));
+                                                }
+                                                if (StrUtil.isNotBlank(queryDTO.getProductNo())) {
+                                                    bq.must(m -> m.match(mc -> mc
+                                                            .field("productNo").query(queryDTO.getProductNo())
+                                                    ));
+                                                }
+                                                Optional.ofNullable(queryDTO.getCategoryId()).ifPresent(categoryId -> {
+                                                    bq.filter(q -> q.term(tq -> tq.field("categoryId").value(categoryId)));
+                                                });
+                                                Optional.ofNullable(queryDTO.getBrandId()).ifPresent(brandId -> {
+                                                    bq.filter(q -> q.term(tq -> tq.field("brandId").value(brandId)));
+                                                });
+                                                Optional.ofNullable(queryDTO.getStatus()).ifPresent(status -> {
+                                                    bq.filter(q -> q.term(tq -> tq.field("status").value(status)));
+                                                });
+                                                Optional.ofNullable(queryDTO.getHasStock()).ifPresent(hasStock -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("stock").gt(JsonData.of(0))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMinPrice()).ifPresent(minPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("price").gte(JsonData.of(minPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMaxPrice()).ifPresent(maxPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("price").lte(JsonData.of(maxPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMinMarketPrice()).ifPresent(minMarketPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("marketPrice").gte(JsonData.of(minMarketPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMaxMarketPrice()).ifPresent(maxMarketPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("marketPrice").lte(JsonData.of(maxMarketPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMinCostPrice()).ifPresent(minCostPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("costPrice").gte(JsonData.of(minCostPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMaxCostPrice()).ifPresent(maxCostPrice -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("costPrice").lte(JsonData.of(maxCostPrice))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMinStock()).ifPresent(minStock -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("stock").gte(JsonData.of(minStock))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getMaxStock()).ifPresent(maxStock -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("stock").lte(JsonData.of(maxStock))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getCreateTimeStart()).ifPresent(createTimeStart -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("createTime").gte(JsonData.of(createTimeStart))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getCreateTimeEnd()).ifPresent(createTimeEnd -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("createTime").lte(JsonData.of(createTimeEnd))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getUpdateTimeStart()).ifPresent(updateTimeStart -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("updateTime").gte(JsonData.of(updateTimeStart))));
+                                                });
+                                                Optional.ofNullable(queryDTO.getUpdateTimeEnd()).ifPresent(updateTimeEnd -> {
+                                                    bq.filter(q -> q.range(rq -> rq.field("updateTime").lte(JsonData.of(updateTimeEnd))));
+                                                });
+                                                return bq;
+                                            }
+                                    )
+                            )
+                            .from((queryDTO.getPageNum() - 1) * queryDTO.getPageSize())
+                            .size(queryDTO.getPageSize())
+                            .highlight(hl -> hl
+                                    .fields("productName", hf -> hf.preTags("<span style='color:red'>").postTags("</span>"))
+                                    .fields("productNo", hf -> hf.preTags("<span style='color:red'>").postTags("</span>"))
+                            )
+                    , ProductEsVO.class);
+            log.info("query product list: {}", searchResponse);
+            List<ProductEsVO> productEsVOS = searchResponse.hits().hits().stream().map(m -> {
+                ProductEsVO productEsVO = BeanUtil.copyProperties(m.source(), ProductEsVO.class);
+                productEsVO.setHighlightProductName(String.join("", m.highlight().getOrDefault("productName", List.of())));
+                productEsVO.setHighlightProductNo(String.join("", m.highlight().getOrDefault("productNo", List.of())));
+                return productEsVO;
+            }).toList();
+            return ProductListVO.builder().total(count).productEsVOList(productEsVOS).build();
+        } catch (IOException e) {
+            log.error("query product list error", e);
+            throw new RuntimeException("query product list error");
+        }
+    }
+
+    @Override
+    public Map<String, Object> testSegment(String text) {
+        log.info("test segment: {}", text);
+        Map<String, Object> result = new HashMap<>();
+        try {
+            result.put("ik_max_word", elasticsearchClient.indices().analyze(ar -> ar.analyzer("ik_max_word").text(text)).tokens().stream().map(AnalyzeToken::token).collect(Collectors.joining("、")));
+            result.put("ik_smart", elasticsearchClient.indices().analyze(ar -> ar.analyzer("ik_smart").text(text)).tokens().stream().map(AnalyzeToken::token).collect(Collectors.joining("、")));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
+
+    @Override
+    public IndexMappingVO getMapping(String index) {
+        log.info("get mapping: {}", index);
+        try {
+            var response = elasticsearchClient.indices().getMapping(gm -> gm.index(index));
+            var indexMapping = response.result().get(index);
+            if (indexMapping == null) {
+                return null;
+            }
+            IndexMappingVO vo = new IndexMappingVO();
+            vo.setIndexName(index);
+            var properties = indexMapping.mappings().properties();
+            List<IndexMappingVO.FieldMapping> fieldMappings = new ArrayList<>();
+            properties.forEach((fieldName, property) -> {
+                IndexMappingVO.FieldMapping fm = new IndexMappingVO.FieldMapping();
+                fm.setFieldName(fieldName);
+                fm.setType(property._kind().toString().toLowerCase());
+                if (property.isText()) {
+                    var textProp = property.text();
+                    fm.setAnalyzer(textProp.analyzer());
+                    fm.setSearchAnalyzer(textProp.searchAnalyzer());
+                    if (textProp.fields() != null && textProp.fields().containsKey("keyword")) {
+                        fm.setFields(Map.of("keyword", Map.of("type", "keyword", "ignore_above", 256)));
+                    }
+                } else if (property.isDate()) {
+                    fm.setFormat(property.date().format());
+                } else if (property.isKeyword()) {
+                    var kw = property.keyword();
+                    if (kw.ignoreAbove() != null) {
+                        fm.setFields(Map.of("keyword", Map.of("type", "keyword", "ignore_above", kw.ignoreAbove())));
+                    }
+                }
+                fieldMappings.add(fm);
+            });
+            vo.setProperties(fieldMappings);
+            return vo;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

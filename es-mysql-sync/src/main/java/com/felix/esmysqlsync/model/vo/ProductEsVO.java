@@ -25,9 +25,19 @@ public class ProductEsVO {
     private String productNo;
 
     /**
+     * 高亮：商品编码
+     */
+    private String highlightProductNo;
+
+    /**
      * 商品名称
      */
     private String productName;
+
+    /**
+     * 高亮：商品名称
+     */
+    private String highlightProductName;
 
     /**
      * 分类ID
