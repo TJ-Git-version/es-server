@@ -3,6 +3,7 @@ package com.felix.esmysqlsync.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
@@ -58,16 +59,63 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
     /**
      * 全量同步数据从旧索引到新索引
      */
-    public ReindexResponse reindexData(String sourceIndex, String destIndex) throws Exception {
-        ReindexResponse response = elasticsearchClient.reindex(r -> r
-                .source(Source.of(s -> s.index(sourceIndex)))
-                .dest(Destination.of(d -> d.index(destIndex)))
-                .waitForCompletion(true) // 等待同步完成
-                .refresh(true) // 同步完成后刷新索引
-        );
+    @Override
+    public Map<String, Object> reindexData(String sourceIndex, String destIndex) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("sourceIndex", sourceIndex);
+        result.put("destIndex", destIndex);
+        try {
+            ReindexResponse response = elasticsearchClient.reindex(r -> r
+                    .source(Source.of(s -> s.index(sourceIndex)))
+                    .dest(Destination.of(d -> d.index(destIndex)))
+                    .refresh(true)
+            );
+            result.put("total", response.total());
+            result.put("failures", response.failures().size());
+            result.put("status", "completed");
+            log.info("同步完成：成功 {} 条，失败 {} 条", response.total(), response.failures().size());
+        } catch (IOException e) {
+            result.put("status", "failed");
+            result.put("error", e.getMessage());
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
 
-        System.out.println("同步完成：成功 " + response.total() + " 条，失败 " + response.failures().size() + " 条");
-        return response;
+    /**
+     * 异步全量同步（带进度跟踪）
+     */
+    @Override
+    public String reindexDataAsync(String sourceIndex, String destIndex) {
+        try {
+            var response = elasticsearchClient.reindex(r -> r
+                    .source(Source.of(s -> s.index(sourceIndex)))
+                    .dest(Destination.of(d -> d.index(destIndex)))
+                    .waitForCompletion(false)
+                    .refresh(true)
+            );
+            return response.task();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * 获取Reindex任务进度
+     */
+    @Override
+    public Map<String, Object> getReindexProgress(String taskId) {
+        Map<String, Object> result = new HashMap<>();
+        try {
+            result.put("taskId", taskId);
+            var taskInfo = elasticsearchClient.tasks().get(t -> t.taskId(taskId));
+            result.put("type", taskInfo.task() != null ? taskInfo.task().type() : null);
+            result.put("action", taskInfo.task() != null ? taskInfo.task().action() : null);
+            result.put("status", taskInfo.task() != null ? taskInfo.task().status().toString() : null);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return result;
     }
 
     /**
@@ -75,6 +123,7 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
      * @param newIndex 新索引名
      * @param alias 公共别名
      */
+    @Override
     public boolean switchIndexAliasAuto(String oldIndex, String newIndex, String alias)  {
         log.info("Switching index alias from {} to {} for alias {}", oldIndex, newIndex, alias);
         try {
@@ -101,9 +150,9 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
     @Override
     public void createIndex() {
         try {
-            BooleanResponse exists = elasticsearchClient.indices().exists(er -> er.index("product_v1"));
+            BooleanResponse exists = elasticsearchClient.indices().exists(er -> er.index("product_v2"));
             if (exists.value()) {
-                log.info("Index product_v1 already exists");
+                log.info("Index product_v2 already exists");
                 return;
             }
             Map<String, Property> properties = new HashMap<>();
@@ -165,7 +214,7 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
                     )
             ));
             elasticsearchClient.indices().create(cir -> cir
-                    .index("product_v1")
+                    .index("product_v2")
                     .mappings(m -> m
                             .properties(properties)
                     ));
@@ -381,6 +430,9 @@ public class ProductServiceImpl extends ServiceImpl<ProductMapper, ProductEntity
                             .highlight(hl -> hl
                                     .fields("productName", hf -> hf.preTags("<span style='color:red'>").postTags("</span>"))
                                     .fields("productNo", hf -> hf.preTags("<span style='color:red'>").postTags("</span>"))
+                            )
+                            .sort(so -> so
+                                    .field(f -> f.field("createTime").order(SortOrder.Desc))
                             )
                     , ProductEsVO.class);
             log.info("query product list: {}", searchResponse);

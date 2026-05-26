@@ -27,4 +27,10 @@ public interface ProductService extends IService<ProductEntity> {
 
     IndexMappingVO getMapping(String index);
 
+    Map<String, Object> reindexData(String sourceIndex, String destIndex);
+
+    String reindexDataAsync(String sourceIndex, String destIndex);
+
+    Map<String, Object> getReindexProgress(String taskId);
+
 }
